@@ -5,64 +5,53 @@ import info.kgeorgiy.java.advanced.mapper.ParallelMapper;
 import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.List;
-import java.util.concurrent.locks.Condition;
-import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
 
 public class ParallelMapperImpl implements ParallelMapper {
 
     private List<Thread> threadList;
-    private List<CustomRunnable> tasks;
-    private ReentrantLock lock;
-    private Condition condition;
+    private final List<CustomRunnable> tasks;
+
 
     public ParallelMapperImpl(int threads) {
 
         threadList = new ArrayList<>(threads);
         tasks = new LinkedList<>();
         Thread tmp;
-
-        lock = new ReentrantLock();
-        condition = lock.newCondition();
-
         for (int i = 0; i < threads; ++i) {
-            tmp = new Thread(new HandlerRunnable(tasks, lock, condition));
+            tmp = new Thread(new HandlerRunnable(tasks));
             threadList.add(tmp);
         }
-
         threadList.forEach(Thread::start);
     }
 
     @Override
     public <T, R> List<R> map(Function<? super T, ? extends R> f, List<? extends T> args) throws InterruptedException {
         List<CustomRunnable<T, R>> runnables = new LinkedList<>();
-        ReentrantLock localLock = new ReentrantLock();
-        Condition localCondition = localLock.newCondition();
         for (T arg : args) {
-            runnables.add(new CustomRunnable<>(f, arg, localLock, localCondition));
+            runnables.add(new CustomRunnable<>(f, arg));
         }
 
-        lock.lock();
+        synchronized (tasks) {
 
-        tasks.addAll(runnables);
-        condition.signalAll();
+            tasks.addAll(runnables);
+            tasks.notifyAll();
 
-        lock.unlock();
+        }
 
-
-        List<R> res = new ArrayList<>(args.size());
-
-        localLock.lock();
+        List<R> res = new ArrayList<R>(args.size());
         for (CustomRunnable<T, R> curr :
                 runnables) {
-            while (curr.result() == null) {
-                localCondition.await();
+            synchronized (curr) {
+                while (curr.result() == null) {
+                    curr.wait();
+                }
             }
 
             res.add(curr.result());
 
         }
-        localLock.unlock();
+
         return res;
     }
 
@@ -76,22 +65,15 @@ public class ParallelMapperImpl implements ParallelMapper {
         Function<? super T, ? extends R> func;
         T data;
         R res;
-        final ReentrantLock lock;
-        final Condition condition;
 
-        CustomRunnable(Function<? super T, ? extends R> func, T val, ReentrantLock lock, Condition condition) {
+        CustomRunnable(Function<? super T, ? extends R> func, T val) {
             data = val;
             this.func = func;
-            this.lock = lock;
-            this.condition = condition;
         }
 
         @Override
         public void run() {
-            lock.lock();
             res = func.apply(data);
-            condition.signal();
-            lock.unlock();
         }
 
         R result() {
@@ -102,31 +84,31 @@ public class ParallelMapperImpl implements ParallelMapper {
     private class HandlerRunnable implements Runnable {
 
         List<CustomRunnable> list;
-        ReentrantLock lock;
-        Condition condition;
 
-        HandlerRunnable(List<CustomRunnable> list, ReentrantLock lock, Condition condition) {
+        HandlerRunnable(List<CustomRunnable> list) {
             this.list = list;
-            this.lock = lock;
-            this.condition = condition;
         }
 
         @Override
         public void run() {
             while (!Thread.currentThread().isInterrupted()) {
                 Runnable tmp;
-                lock.lock();
-                while (list.size() == 0) {
-                    try {
-                        condition.await();
-                    } catch (InterruptedException e) {
-                        return;
-                    }
-                }
-                tmp = list.remove(0);
-                lock.unlock();
+                synchronized (list) {
 
-                tmp.run();
+                    while (list.size() == 0) {
+                        try {
+                            list.wait();
+                        } catch (InterruptedException e) {
+                            return;
+                        }
+                    }
+                    tmp = list.remove(0);
+                }
+
+                synchronized (tmp) {
+                    tmp.run();
+                    tmp.notify();
+                }
 
             }
         }
