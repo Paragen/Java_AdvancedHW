@@ -27,12 +27,14 @@ public class ParallelMapperImpl implements ParallelMapper {
 
     @Override
     public <T, R> List<R> map(Function<? super T, ? extends R> f, List<? extends T> args) throws InterruptedException {
-        List<CustomRunnable<T, R>> runnables = new LinkedList<>();
-        for (T arg : args) {
-            runnables.add(new CustomRunnable<>(f, arg));
-        }
+       
+       	List<CustomRunnable<T, R>> runnables = new LinkedList<>();
 
         synchronized (tasks) {
+
+        	for (T arg : args) {
+            	runnables.add(new CustomRunnable<>(f, arg));
+        	}
 
             tasks.addAll(runnables);
             tasks.notifyAll();
